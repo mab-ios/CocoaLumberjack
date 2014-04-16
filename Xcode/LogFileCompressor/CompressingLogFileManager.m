@@ -40,7 +40,12 @@
 
 - (id)init
 {
-    if ((self = [super init]))
+    return [self initWithLogsDirectory:nil];
+}
+
+- (id)initWithLogsDirectory:(NSString *)aLogsDirectory
+{
+    if ((self = [super initWithLogsDirectory:aLogsDirectory]))
     {
         upToDate = NO;
         
@@ -61,8 +66,11 @@
 - (void)compressLogFile:(DDLogFileInfo *)logFile
 {
     self.isCompressing = YES;
-    
-    [NSThread detachNewThreadSelector:@selector(backgroundThread_CompressLogFile:) toTarget:self withObject:logFile];
+
+    CompressingLogFileManager* __weak weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_BACKGROUND, 0), ^{
+        [weakSelf backgroundThread_CompressLogFile:logFile];
+    });
 }
 
 - (void)compressNextLogFile
@@ -243,7 +251,7 @@
     NSUInteger inputDataSize = 0;
     
     BOOL done = YES;
-    BOOL error = NO;
+    NSError* error = nil;
     do
     {
         @autoreleasepool {
@@ -272,6 +280,10 @@
         NSUInteger inputBufferLength = inputDataLength - inputDataSize;
         
         NSInteger readLength = [inputStream read:(uint8_t *)inputBuffer maxLength:inputBufferLength];
+        if (readLength < 0) {
+            error = [inputStream streamError];
+            break;
+        }
         
         NSLogVerbose(@"CompressingLogFileManager: Read %li bytes from file", (long)readLength);
         
@@ -282,10 +294,10 @@
         // Tell it to put the compressed bytes into our output buffer.
         
         strm.next_in = (Bytef *)[inputData mutableBytes];   // Read from input buffer
-        strm.avail_in = inputDataSize;                      // as much as was read from file (plus leftovers).
+        strm.avail_in = (uInt)inputDataSize;                // as much as was read from file (plus leftovers).
         
         strm.next_out = (Bytef *)[outputData mutableBytes]; // Write data to output buffer
-        strm.avail_out = outputDataLength;                  // as much space as is available in the buffer.
+        strm.avail_out = (uInt)outputDataLength;            // as much space as is available in the buffer.
         
         // When we tell zlib to compress our data,
         // it won't directly tell us how much data was processed.
@@ -328,7 +340,7 @@
             
             if (writeLength < 0)
             {
-                error = YES;
+                error = [outputStream streamError];
             }
             else
             {
@@ -365,7 +377,7 @@
         
         } // end @autoreleasepool
         
-    } while (!done && !error);
+    } while (!done && error == nil);
     
     // STEP 9
     
@@ -383,8 +395,12 @@
     {
         // Remove output file.
         // Our compression attempt failed.
-        
-        [[NSFileManager defaultManager] removeItemAtPath:tempOutputFilePath error:nil];
+
+        NSLogError(@"Compression of %@ failed: %@", inputFilePath, error);
+        error = nil;
+        BOOL ok = [[NSFileManager defaultManager] removeItemAtPath:tempOutputFilePath error:&error];
+        if (!ok)
+            NSLogError(@"Failed to clean up %@ after failed compression: %@", tempOutputFilePath, error);
         
         // Report failure to class via logging thread/queue
         
@@ -397,8 +413,11 @@
     {
         // Remove original input file.
         // It will be replaced with the new compressed version.
-        
-        [[NSFileManager defaultManager] removeItemAtPath:inputFilePath error:nil];
+
+        error = nil;
+        BOOL ok = [[NSFileManager defaultManager] removeItemAtPath:inputFilePath error:&error];
+        if (!ok)
+            NSLogWarn(@"Warning: failed to remove original file %@ after compression: %@", inputFilePath, error);
         
         // Mark the compressed file as archived,
         // and then move it into its final destination.
