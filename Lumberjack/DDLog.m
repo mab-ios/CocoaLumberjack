@@ -22,7 +22,7 @@
 **/
 
 #if ! __has_feature(objc_arc)
-#warning This file must be compiled with ARC. Use -fobjc-arc flag (or convert project to ARC).
+#error This file must be compiled with ARC. Use -fobjc-arc flag (or convert project to ARC).
 #endif
 
 // We probably shouldn't be using DDLog() statements within the DDLog implementation.
@@ -154,7 +154,7 @@ static unsigned int numProcessors;
 #else
         NSString *notificationName = nil;
         
-        // on Command Line Tool apps AppKit may not be avaliable
+        // On Command Line Tool apps AppKit may not be avaliable
 #ifdef NSAppKitVersionNumber10_0
         if (NSApp) {
             notificationName = @"NSApplicationWillTerminateNotification";
@@ -204,7 +204,7 @@ static unsigned int numProcessors;
 
 + (void)addLogger:(id <DDLogger>)logger
 {
-    [self addLogger:logger withLogLevel:LOG_LEVEL_VERBOSE];
+    [self addLogger:logger withLogLevel:LOG_LEVEL_ALL]; // LOG_LEVEL_ALL has all bits set
 }
 
 + (void)addLogger:(id <DDLogger>)logger withLogLevel:(int)logLevel
@@ -456,7 +456,7 @@ static unsigned int numProcessors;
 
 + (NSArray *)registeredClasses
 {
-    int numClasses, i;
+    NSUInteger numClasses, i;
     
     // We're going to get the list of all registered classes.
     // The Objective-C runtime library automatically registers all the classes defined in your source code.
@@ -469,15 +469,15 @@ static unsigned int numProcessors;
     // registered class definitions without actually retrieving any class definitions.
     // This allows us to allocate the minimum amount of memory needed for the application.
     
-    numClasses = objc_getClassList(NULL, 0);
+    numClasses = (NSUInteger)MAX(objc_getClassList(NULL, 0), 0);
     
     // The numClasses method now tells us how many classes we have.
     // So we can allocate our buffer, and get pointers to all the class definitions.
     
-    Class *classes = (Class *)malloc(sizeof(Class) * numClasses);
+    Class *classes = numClasses ? (Class *)malloc(sizeof(Class) * numClasses) : NULL;
     if (classes == NULL) return nil;
     
-    numClasses = objc_getClassList(classes, numClasses);
+    numClasses = (NSUInteger)MAX(objc_getClassList(classes, (int)numClasses), 0);
     
     // We can now loop through the classes, and test each one to see if it is a DDLogging class.
     
@@ -792,13 +792,13 @@ NSString *DDExtractFileNameWithoutExtension(const char *filePath, BOOL copy)
         {
             // lastSlash -> lastDot
             subStr = lastSlash + 1;
-            subLen = lastDot - subStr;
+            subLen = (NSUInteger)(lastDot - subStr);
         }
         else
         {
             // lastSlash -> endOfString
             subStr = lastSlash + 1;
-            subLen = p - subStr;
+            subLen = (NSUInteger)(p - subStr);
         }
     }
     else
@@ -807,13 +807,13 @@ NSString *DDExtractFileNameWithoutExtension(const char *filePath, BOOL copy)
         {
             // startOfString -> lastDot
             subStr = (char *)filePath;
-            subLen = lastDot - subStr;
+            subLen = (NSUInteger)(lastDot - subStr);
         }
         else
         {
             // startOfString -> endOfString
             subStr = (char *)filePath;
-            subLen = p - subStr;
+            subLen = (NSUInteger)(p - subStr);
         }
     }
     
@@ -896,6 +896,66 @@ static char *dd_str_copy(const char *str)
     return result;
 }
 
+// Can we use DISPATCH_CURRENT_QUEUE_LABEL ?
+// Can we use dispatch_get_current_queue (without it crashing) ?
+//
+// a) Compiling against newer SDK's (iOS 7+/OS X 10.9+) where DISPATCH_CURRENT_QUEUE_LABEL is defined
+//    on a (iOS 7.0+/OS X 10.9+) runtime version
+//
+// b) Systems where dispatch_get_current_queue is not yet deprecated and won't crash (< iOS 6.0/OS X 10.9)
+//
+//    dispatch_get_current_queue(void);
+//      __OSX_AVAILABLE_BUT_DEPRECATED(__MAC_10_6,__MAC_10_9,__IPHONE_4_0,__IPHONE_6_0)
+
+#if TARGET_OS_IPHONE
+
+  // Compiling for iOS
+
+  #ifndef __IPHONE_7_0
+    #define __IPHONE_7_0 70000
+  #endif
+
+  #if __IPHONE_OS_VERSION_MIN_REQUIRED >= __IPHONE_7_0 // iOS 7 or later required
+
+      #define USE_DISPATCH_CURRENT_QUEUE_LABEL  YES
+      #define USE_DISPATCH_GET_CURRENT_QUEUE    NO
+
+  #else                                                // iOS 7 NOT required
+
+      #ifndef NSFoundationVersionNumber_iOS_6_1
+        #define NSFoundationVersionNumber_iOS_6_1 993.00
+      #endif
+      #ifndef NSFoundationVersionNumber_iOS_6_0
+        #define NSFoundationVersionNumber_iOS_6_0 992.00
+      #endif
+
+      #define USE_DISPATCH_CURRENT_QUEUE_LABEL (floor(NSFoundationVersionNumber) > NSFoundationVersionNumber_iOS_6_1)
+      #define USE_DISPATCH_GET_CURRENT_QUEUE   (floor(NSFoundationVersionNumber) < NSFoundationVersionNumber_iOS_6_0)
+
+    #endif
+
+#else
+
+  // Compiling for Mac OS X
+
+  #ifndef MAC_OS_X_VERSION_10_9
+    #define MAC_OS_X_VERSION_10_9 1090
+  #endif
+
+  #if MAC_OS_X_VERSION_MIN_REQUIRED >= MAC_OS_X_VERSION_10_9 // Mac OS X 10.9 or later required
+
+    #define USE_DISPATCH_CURRENT_QUEUE_LABEL  YES
+    #define USE_DISPATCH_GET_CURRENT_QUEUE    NO
+
+  #else
+
+    #define USE_DISPATCH_CURRENT_QUEUE_LABEL ([NSTimer instancesRespondToSelector:@selector(tolerance)]) // OS X 10.9+
+    #define USE_DISPATCH_GET_CURRENT_QUEUE  (![NSTimer instancesRespondToSelector:@selector(tolerance)]) // < OS X 10.9
+
+  #endif
+
+#endif
+
 - (instancetype)initWithLogMsg:(NSString *)msg
                          level:(int)level
                           flag:(int)flag
@@ -957,50 +1017,23 @@ static char *dd_str_copy(const char *str)
 
     // Try to get the current queue's label
 
-    // a) Compiling against newer SDK's (iOS 7+/OS X 10.9+) where DISPATCH_CURRENT_QUEUE_LABEL is defined
-    //    on a (iOS 7.0+/OS X 10.9+) runtime version
-    BOOL gotLabel = NO;
-#ifdef DISPATCH_CURRENT_QUEUE_LABEL
-    if (
-#if TARGET_OS_IPHONE
-#ifndef NSFoundationVersionNumber_iOS_6_1
-#define NSFoundationVersionNumber_iOS_6_1 993.00
-#endif
-        floor(NSFoundationVersionNumber) > NSFoundationVersionNumber_iOS_6_1 // iOS 7+ (> iOS 6.1)
-#else
-        [NSTimer instancesRespondToSelector:@selector(tolerance)] // OS X 10.9+
-#endif
-        ) {
-      queueLabel = dd_str_copy(dispatch_queue_get_label(DISPATCH_CURRENT_QUEUE_LABEL));
-      gotLabel = YES;
-    }
-#endif
-
-    // b) Systems where dispatch_get_current_queue is not yet deprecated and won't crash (< iOS 6.0/OS X 10.9)
-    //    dispatch_get_current_queue(void); __OSX_AVAILABLE_BUT_DEPRECATED(__MAC_10_6,__MAC_10_9,__IPHONE_4_0,__IPHONE_6_0)
-    if (!gotLabel &&
-#if TARGET_OS_IPHONE
-#ifndef NSFoundationVersionNumber_iOS_6_0
-#define NSFoundationVersionNumber_iOS_6_0 993.00
-#endif
-        floor(NSFoundationVersionNumber) < NSFoundationVersionNumber_iOS_6_0 // < iOS 6.0
-#else
-        ![NSTimer instancesRespondToSelector:@selector(tolerance)] // < OS X 10.9
-#endif
-        ) {
+    if (USE_DISPATCH_CURRENT_QUEUE_LABEL)
+	{
+		queueLabel = dd_str_copy(dispatch_queue_get_label(DISPATCH_CURRENT_QUEUE_LABEL));
+	}
+	else if (USE_DISPATCH_GET_CURRENT_QUEUE)
+	{
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-      dispatch_queue_t currentQueue = dispatch_get_current_queue();
+		dispatch_queue_t currentQueue = dispatch_get_current_queue();
 #pragma clang diagnostic pop
 
-      queueLabel = dd_str_copy(dispatch_queue_get_label(currentQueue));
-      gotLabel = YES;
-    }
-
-    // c) Give up
-    if (!gotLabel) {
-      queueLabel = dd_str_copy(""); // iOS 6.x only
-    }
+		queueLabel = dd_str_copy(dispatch_queue_get_label(currentQueue));
+	}
+	else
+	{
+		queueLabel = dd_str_copy(""); // iOS 6.x only
+	}
 
     threadName = [[NSThread currentThread] name];
   }
