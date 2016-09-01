@@ -2450,6 +2450,7 @@
 				IPHONEOS_DEPLOYMENT_TARGET = 8.0;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks @loader_path/Frameworks";
 				MODULEMAP_FILE = Framework/Lumberjack/CocoaLumberjack.modulemap;
+				PRODUCT_BUNDLE_IDENTIFIER = com.deusty.CocoaLumberjack;
 				PRODUCT_NAME = CocoaLumberjack;
 				SDKROOT = macosx;
 				SKIP_INSTALL = YES;
@@ -2478,6 +2479,7 @@
 				IPHONEOS_DEPLOYMENT_TARGET = 8.0;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks @loader_path/Frameworks";
 				MODULEMAP_FILE = Framework/Lumberjack/CocoaLumberjack.modulemap;
+				PRODUCT_BUNDLE_IDENTIFIER = com.deusty.CocoaLumberjack;
 				PRODUCT_NAME = CocoaLumberjack;
 				SDKROOT = macosx;
 				SKIP_INSTALL = YES;
